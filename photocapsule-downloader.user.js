@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.1.1
+// @version      2.1.2
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダへ少数ずつ順番に書き込む。URLの期限切れは自動で取り直し、中断しても続きから再開できる
 // @author       Hoyomaru
 // @license      MIT
