@@ -913,7 +913,7 @@
               s.coin ? el('span', { className: 'sub' }, '合言葉を入れ直すと続きから保存します')
                 : button('再開', () => { job = jobFromSaved(s); runJob(job); render(); }, 'primary', 'play'),
               el('span', { className: 'sp' }),
-              button('記録を消す', () => { if (confirm(`「${s.name}」の記録を消しますか？`)) { deleteJob(s.id); render(); } }, 'ghost')));
+              button('記録を消す', () => { deleteJob(s.id); render(); }, 'ghost')));
         }),
       ];
     }
