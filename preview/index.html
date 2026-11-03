@@ -1,0 +1,156 @@
+<title>順次ダウンローダー試運転</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  /* 左に説明と操作、右下にスクリプト本体のパネルが浮かぶ。ページ側は控えめな作業台 */
+  :root {
+    --bg: #f4f7f9; --surface: #ffffff; --fg: #1d2a33; --muted: #5f6f7a; --line: #dfe6eb; --accent: #229fd6;
+    --font: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #12181d; --surface: #1b2228; --fg: #e5ecf1; --muted: #94a4af; --line: #2f3b44; --accent: #74d3f5; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --bg: #12181d; --surface: #1b2228; --fg: #e5ecf1; --muted: #94a4af; --line: #2f3b44; --accent: #74d3f5; color-scheme: dark; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; line-height: 1.7;
+         padding-block: 28px 140px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 560px; display: grid; gap: 18px; }
+  h1 { margin: 0; font-size: 20px; text-wrap: balance; }
+  p { margin: 0; color: var(--muted); }
+  .box { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; display: grid; gap: 12px; }
+  .box h2 { margin: 0; font-size: 13px; letter-spacing: .04em; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+  label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  button { font: inherit; font-weight: 700; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+  button.go { background: var(--accent); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  select { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  ol { margin: 0; padding-left: 1.3em; color: var(--muted); display: grid; gap: 4px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main>
+  <h1>順次ダウンローダー v2.1 の試運転</h1>
+  <p>右下のパネルは、スクリプト本体そのものです。サイトとの通信とフォルダへの書き込みだけを偽物に差し替えています。実際にはファイルを保存しません。</p>
+
+  <section class="box" aria-labelledby="h-steps">
+    <h2 id="h-steps">試し方</h2>
+    <ol>
+      <li>パネルの「保存先を選ぶ」を押す（偽のフォルダ「写真カプセル」が選ばれます）</li>
+      <li>下の「受信を始める」を押す（写真と動画 40 件）</li>
+      <li>見出し部分をドラッグして動かす、最小化する、「一覧」を開くなどを試す</li>
+    </ol>
+  </section>
+
+  <section class="box" aria-labelledby="h-ctl">
+    <h2 id="h-ctl">偽の受信</h2>
+    <div class="row">
+      <button class="go" id="start" type="button">受信を始める</button>
+      <button id="reload" type="button">最初からやり直す</button>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="fail" checked> 失敗するファイルを混ぜる</label>
+      <label><input type="checkbox" id="forbid" checked> 期限切れ（403）を一度起こす</label>
+      <label>1本あたりの速度
+        <select id="speed">
+          <option value="1">1 MB/s</option>
+          <option value="3" selected>3 MB/s</option>
+          <option value="8">8 MB/s</option>
+        </select>
+      </label>
+    </div>
+  </section>
+</main>
+
+<script>
+  // ---- Tampermonkey の代わり ----
+  (function () {
+    const mem = new Map();
+    window.unsafeWindow = window;
+    window.GM_getValue = (k, d) => (mem.has(k) ? mem.get(k) : d);
+    window.GM_setValue = (k, v) => mem.set(k, JSON.parse(JSON.stringify(v)));
+    window.GM_deleteValue = (k) => mem.delete(k);
+    window.GM_listValues = () => [...mem.keys()];
+    window.GM_registerMenuCommand = () => {};
+  })();
+
+  // ---- 偽のフォルダ ----
+  function makeDir(name) {
+    const dirs = new Map();
+    const files = new Map();
+    return {
+      kind: 'directory', name,
+      async queryPermission() { return 'granted'; },
+      async requestPermission() { return 'granted'; },
+      async getDirectoryHandle(n) { if (!dirs.has(n)) dirs.set(n, makeDir(n)); return dirs.get(n); },
+      async getFileHandle(n, o) {
+        if (!files.has(n) && !(o && o.create)) throw Object.assign(new Error('not found'), { name: 'NotFoundError' });
+        if (!files.has(n)) files.set(n, null);
+        return {
+          async getFile() { const s = files.get(n); if (s == null) throw Object.assign(new Error('not found'), { name: 'NotFoundError' }); return { size: s }; },
+          async createWritable() { let size = 0; return new WritableStream({ write(c) { size += c.byteLength; }, close() { files.set(n, size); } }); },
+        };
+      },
+    };
+  }
+  window.showDirectoryPicker = async () => makeDir('写真カプセル');
+
+  // ---- 偽のファイル一覧 ----
+  const N = 40;
+  const sizes = Array.from({ length: N }, (_, i) => (i % 5 === 4 ? 8 + ((i * 7) % 12) : 0.8 + ((i * 13) % 22) / 10) * 1e6 | 0);
+  const isVideo = (i) => i % 5 === 4;
+  let gen = 0;
+  const urlOf = (i, g) => `https://demo.r2.cloudflarestorage.com/capsule/w42/original_${i + 1}.${isVideo(i) ? 'mp4' : 'jpg'}?X-Amz-Expires=600&X-Amz-Signature=g${g}`;
+  function listJson() {
+    gen++;
+    return { success: true, data: { ContentsDownload: { id: '1', is_usecoin: '0' },
+      ContentsDownloadDetail: sizes.map((s, i) => ({ content_url: urlOf(i, gen), contentSize: String(s), content_type: isVideo(i) ? 'video/mp4' : 'image/jpeg' })) } };
+  }
+
+  // ---- 偽の通信（スクリプトより先に差し替える）----
+  const tried = {};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  window.fetch = async (url) => {
+    url = String(url);
+    if (url.includes('/v1/watchwords/download.json')) return new Response(JSON.stringify(listJson()), { status: 200 });
+    const m = url.match(/original_(\d+)/);
+    if (!m) return new Response('', { status: 404 });
+    const n = Number(m[1]);
+    tried[n] = (tried[n] || 0) + 1;
+    await sleep(300);
+    if (document.getElementById('forbid').checked && n === 6 && tried[n] === 1) return new Response('', { status: 403 });
+    if (document.getElementById('fail').checked && (n === 13 || n === 29)) throw new TypeError('Failed to fetch');
+    const size = sizes[n - 1];
+    let sent = 0;
+    const body = new ReadableStream({
+      async pull(ctl) {
+        const perSec = Number(document.getElementById('speed').value) * 1e6;
+        const chunk = Math.min(65536, size - sent);
+        if (chunk <= 0) { ctl.close(); return; }
+        await sleep((chunk / perSec) * 1000);
+        sent += chunk;
+        ctl.enqueue(new Uint8Array(chunk));
+      },
+    });
+    return new Response(body, { status: 200, headers: { 'content-length': String(size) } });
+  };
+  class DemoXHR {
+    open(m, url) { this.url = url; this.l = []; }
+    setRequestHeader() {}
+    addEventListener(t, f) { if (t === 'load') this.l.push(f); }
+    send() {
+      setTimeout(() => {
+        this.response = this.url.includes('servicelogin') ? { data: { User: { user_code: 'DEMO' } } } : listJson();
+        this.l.forEach((f) => f());
+      }, 50);
+    }
+  }
+  window.XMLHttpRequest = DemoXHR;
+
+  document.getElementById('start').addEventListener('click', (e) => {
+    e.currentTarget.disabled = true;
+    sessionStorage.setItem('searchResult', JSON.stringify({ id: 42, name: '夏休み2026', useCoinCount: 0 }));
+    const login = new XMLHttpRequest(); login.open('POST', 'https://api.photo-capsule-puls.net/v1/users/servicelogin.json'); login.send();
+    const list = new XMLHttpRequest(); list.open('GET', 'https://api.photo-capsule-puls.net/v1/watchwords/download.json?watchword_id=42'); list.send();
+  });
+  document.getElementById('reload').addEventListener('click', () => location.reload());
+</script>
+<script src="photocapsule-downloader.user.js"></script>
