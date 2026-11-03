@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.1.2
-// @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダへ少数ずつ順番に書き込む。URLの期限切れは自動で取り直し、中断しても続きから再開できる
+// @version      2.2.0
+// @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる
 // @author       Hoyomaru
 // @license      MIT
 // @homepageURL  https://github.com/Hoyomaru/photocapsule-downloader
@@ -16,7 +16,9 @@
 // @grant        GM_deleteValue
 // @grant        GM_listValues
 // @grant        GM_registerMenuCommand
+// @grant        GM_download
 // @grant        unsafeWindow
+// @connect      r2.cloudflarestorage.com
 // ==/UserScript==
 
 /*
@@ -27,8 +29,10 @@
  *   4. 全URLを fetch で同時に取得 → blob → a.click() で保存。3秒後に完了画面へ移動
  *
  * このスクリプトは 2 の応答を読み取り、4 の fetch は保留にして止める。
- * 各ファイルは自分で fetch し、File System Access API で選んだフォルダへ少しずつ書き込む
- * （ブラウザのダウンロード機能を使わないので、ファイル名が他の拡張機能に変えられない）。
+ * 各ファイルは次のどちらかで保存する（パネルで切り替え）
+ *   フォルダ:     自分で fetch し、File System Access API で選んだフォルダへ書き込む。
+ *                 ブラウザのダウンロード機能を使わないので、ファイル名が他の拡張機能に変えられない
+ *   ダウンロード: GM_download でダウンロードフォルダ/写真カプセル/ に保存する。書き込み許可の確認が出ない
  * URL の期限が近づいたら 2 を自分で呼び直して新しい URL を得る（無料の合言葉のみ）。
  */
 
@@ -44,6 +48,7 @@
     fallbackLifetimeMs: 600 * 1000,  // URLから期限を読めないときの想定(600秒)
     maxRefresh: 50,                  // 1回のジョブで取り直す上限
     fallbackSettleMs: 2000,
+    downloadRoot: '写真カプセル',    // ダウンロード方式の保存先(ダウンロードフォルダの中)
   };
   const API = 'https://api.photo-capsule-puls.net';
   const DL_LIST_RE = /\/v1\/watchwords\/download\.json/;
@@ -235,6 +240,13 @@
 
   const dirReady = dir.load(); // 前回のフォルダを読み込んでおく
 
+  // 保存方式: 'folder' = 選んだフォルダへ書き込む / 'download' = ダウンロードとして保存する
+  const getMode = () => {
+    const m = GM_getValue('saveMode', dir.supported ? 'folder' : 'download');
+    return m === 'folder' && dir.supported ? 'folder' : 'download';
+  };
+  const downloadPath = (j) => `${CFG.downloadRoot}/${j.name}`;
+
   // ===== 保存済み状態 =====
 
   function saveJob(j) {
@@ -373,13 +385,8 @@
 
   async function runJob(j) {
     if (j.running) return;
-    if (!dir.supported) {
-      j.fatal = 'このブラウザはフォルダへの直接書き込みに対応していません。PC版の Chrome か Edge を使ってください。';
-      ui.render();
-      return;
-    }
     await dirReady;
-    if (!(await dir.check())) {
+    if (getMode() === 'folder' && !(await dir.check())) {
       j.needDir = true; // パネルのボタンで許可してもらってから再開する
       ui.render();
       return;
@@ -419,7 +426,8 @@
     it.tries++;
     it.err = '';
     it.loaded = 0;
-    const handle = writeToFolder(j, it, (r) => {
+    const save = getMode() === 'folder' ? writeToFolder : saveAsDownload;
+    const handle = save(j, it, (r) => {
       j.active.delete(it.key);
       if (r.ok) {
         it.status = 'done';
@@ -430,7 +438,7 @@
         it.err = r.err;
         j.fatal = r.fatal;
         j.stopped = true;
-        dir.granted = null;
+        if (r.lostDir) dir.granted = null;
       } else if (it.tries <= CFG.retries) {
         it.status = 'wait';
         it.err = r.err;
@@ -480,12 +488,54 @@
         finish({ ok: true });
       } catch (e) {
         if (writable) { try { await writable.abort(); } catch (x) { /* ignore */ } }
-        finish({ ok: false, err: errText(e), fatal: fatalOf(e) });
+        finish({ ok: false, err: errText(e), fatal: fatalOf(e), lostDir: true });
       }
     })();
 
     return { abort: () => ac.abort() };
   }
+
+  // 1ファイルをダウンロードとして ダウンロード/写真カプセル/合言葉名/ に保存する。
+  // 取得と書き込みは Tampermonkey とブラウザが行うので、フォルダの許可は要らない
+  function saveAsDownload(j, it, done) {
+    let finished = false;
+    const finish = (r) => { if (!finished) { finished = true; done(r); } };
+    const fail = (e) => {
+      const code = (e && e.error) || '';
+      const d = e && e.details;
+      const detail = String((d && typeof d === 'object' ? d.current || d.error : d) || code || 'error');
+      // R2 の期限切れは 403。ブラウザは SERVER_FORBIDDEN などで返す
+      finish({ ok: false, err: /403|FORBIDDEN/i.test(detail) ? 'HTTP 403' : detail, fatal: DL_FATAL[code] || '' });
+    };
+    let req = null;
+    try {
+      req = GM_download({
+        url: it.url,
+        name: `${downloadPath(j)}/${it.file}`,
+        saveAs: false,
+        conflictAction: 'overwrite', // 取り直したときに「(1)」付きの重複を作らない
+        onprogress: (e) => {
+          if (e && e.total > 0) it.size = e.total;
+          if (e && e.loaded >= 0) it.loaded = e.loaded;
+          ui.renderSoon();
+        },
+        onload: () => finish({ ok: true }),
+        onerror: fail,
+        ontimeout: () => finish({ ok: false, err: 'タイムアウト' }),
+      });
+    } catch (e) {
+      fail({ error: 'not_supported', details: e && e.message });
+    }
+    return { abort: () => { try { if (req && req.abort) req.abort(); } catch (e) { /* ignore */ } } };
+  }
+
+  // 再試行しても直らない GM_download のエラー
+  const DL_FATAL = {
+    not_enabled: 'Tampermonkey のダウンロード機能が無効です。Tampermonkey の設定（設定モード「上級者」）の「ダウンロード」で有効にしてください。',
+    not_whitelisted: 'この種類のファイルは Tampermonkey に保存を許されていません。Tampermonkey の設定（設定モード「上級者」）の「ダウンロード」にある「ホワイトリストに登録されたファイル拡張子」に jpg・png・mp4・mov・heic などを足してください。',
+    not_permitted: 'Tampermonkey にダウンロードの権限がありません。Tampermonkey の設定で権限を許可してください。',
+    not_supported: 'この環境ではダウンロードとして保存できません。保存方式を「フォルダに書き込む」に切り替えてください。',
+  };
 
   function errText(e) {
     if (!e) return 'error';
@@ -573,6 +623,13 @@
       .link { all: unset; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--accent-strong); white-space: nowrap; }
       .link:hover { text-decoration: underline; }
       .hint { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+      .seg { display: flex; gap: 2px; padding: 2px; margin-bottom: 8px; background: var(--bg2); border-radius: 9px; }
+      .seg button { all: unset; flex: 1; text-align: center; padding: 4px 6px; border-radius: 7px; cursor: pointer;
+                    font-size: 12px; font-weight: 700; color: var(--muted); }
+      .seg button:hover:not([disabled]) { color: var(--fg); }
+      .seg button[aria-pressed="true"] { background: var(--bg); color: var(--accent-strong); box-shadow: 0 1px 3px rgba(16, 42, 60, .15); }
+      .seg button[disabled] { cursor: default; opacity: .6; }
+      .seg button[aria-pressed="true"][disabled] { opacity: 1; }
 
       .title { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
       .title b { flex: 1; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -855,7 +912,7 @@
     }
 
     function renderCard() {
-      body.replaceChildren(...[dirView(), ...(job ? jobView(job) : idleView())].filter(Boolean));
+      body.replaceChildren(...[saveView(), ...(job ? jobView(job) : idleView())].filter(Boolean));
       ctlRow.hidden = !job;
       const showGrid = !!job && gridOpen;
       grid.hidden = !showGrid;
@@ -878,10 +935,39 @@
       render();
     }
 
-    function dirView() {
-      if (!dir.supported) {
-        return el('div', { className: 'msg ng' }, icon('alert', 14), 'このブラウザではフォルダに直接保存できません。PC版の Chrome か Edge を使ってください。');
+    function setMode(m) {
+      if (m === getMode()) return;
+      GM_setValue('saveMode', m);
+      if (job && !job.running) {
+        job.needDir = false;
+        job.fatal = '';
+        if (job.items.some((i) => i.status === 'wait')) runJob(job);
       }
+      render();
+    }
+
+    // 保存方式の切り替え。保存中は混ざらないように切り替えさせない
+    function modeView() {
+      const m = getMode();
+      const busy = !!(job && job.running);
+      const opt = (v, label) => el('button', { type: 'button', 'aria-pressed': String(m === v),
+        disabled: busy || (v === 'folder' && !dir.supported),
+        title: busy ? '一時停止すると切り替えられます' : null, onclick: () => setMode(v) }, label);
+      return el('div', { className: 'seg', role: 'group', 'aria-label': '保存方式' },
+        opt('download', 'ダウンロードとして保存'), opt('folder', 'フォルダに書き込む'));
+    }
+
+    function saveView() {
+      if (getMode() === 'download') {
+        return el('div', null, modeView(),
+          el('div', { className: 'dir' }, icon('folder', 16),
+            el('span', { className: 'n', title: `ダウンロード/${CFG.downloadRoot}` }, `ダウンロード / ${CFG.downloadRoot}`)),
+          job ? null : el('div', { className: 'hint' }, '許可の確認なしで保存します。ファイル名を変える拡張機能を入れている場合は「フォルダに書き込む」を使ってください。'));
+      }
+      return el('div', null, modeView(), dirView());
+    }
+
+    function dirView() {
       if (dir.granted) {
         return el('div', { className: 'dir' }, icon('folder', 16),
           el('span', { className: 'n', title: dir.granted.name }, dir.granted.name),
@@ -928,7 +1014,7 @@
       const pct = all ? (got / all) * 100 : total ? (done / total) * 100 : 0;
       const finished = !j.running && !running && !waiting;
       const st = statusOf(j);
-      const dirName = dir.granted ? dir.granted.name : dir.stored ? dir.stored.name : '保存先';
+      const dirName = getMode() === 'download' ? `ダウンロード/${CFG.downloadRoot}` : dir.granted ? dir.granted.name : dir.stored ? dir.stored.name : '保存先';
 
       let rate = '';
       if (j.running) {
@@ -1026,7 +1112,7 @@
   // 起動時: 前回のフォルダを読み込み、未設定か途中の受信があればパネルを出す
   document.addEventListener('DOMContentLoaded', async () => {
     await dirReady;
-    if (!job && (listUnfinishedJobs().length || (dir.supported && !dir.stored))) ui.show();
+    if (!job && (listUnfinishedJobs().length || (getMode() === 'folder' && !dir.stored))) ui.show();
     else ui.render();
   }, { once: true });
 })();

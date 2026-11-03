@@ -28,13 +28,13 @@
 </style>
 
 <main>
-  <h1>順次ダウンローダー v2.1 の試運転</h1>
-  <p>右下のパネルは、スクリプト本体そのものです。サイトとの通信とフォルダへの書き込みだけを偽物に差し替えています。実際にはファイルを保存しません。</p>
+  <h1>順次ダウンローダー v2.2 の試運転</h1>
+  <p>右下のパネルは、スクリプト本体そのものです。サイトとの通信と保存だけを偽物に差し替えています。実際にはファイルを保存しません。</p>
 
   <section class="box" aria-labelledby="h-steps">
     <h2 id="h-steps">試し方</h2>
     <ol>
-      <li>パネルの「保存先を選ぶ」を押す（偽のフォルダ「写真カプセル」が選ばれます）</li>
+      <li>パネル上部で保存方式を選ぶ。「フォルダに書き込む」なら「保存先を選ぶ」を押す（偽のフォルダ「写真カプセル」が選ばれます）</li>
       <li>下の「受信を始める」を押す（写真と動画 40 件）</li>
       <li>見出し部分をドラッグして動かす、最小化する、「一覧」を開くなどを試す</li>
     </ol>
@@ -144,6 +144,33 @@
     }
   }
   window.XMLHttpRequest = DemoXHR;
+
+  // ---- 偽の GM_download（偽の通信で受け取り、進み具合を返すだけ）----
+  const demoFetch = window.fetch; // スクリプトが fetch を差し替える前に持っておく
+  window.GM_download = (o) => {
+    let stop = false;
+    (async () => {
+      try {
+        const res = await demoFetch(o.url);
+        if (!res.ok) return o.onerror({ error: 'not_succeeded', details: { current: 'SERVER_FORBIDDEN' } });
+        const total = Number(res.headers.get('content-length'));
+        const rd = res.body.getReader();
+        let loaded = 0;
+        for (;;) {
+          if (stop) return;
+          const { done, value } = await rd.read();
+          if (done) break;
+          loaded += value.byteLength;
+          o.onprogress({ loaded, total });
+        }
+        console.log('[demo] saved', o.name);
+        o.onload();
+      } catch (e) {
+        o.onerror({ error: 'not_succeeded', details: { current: 'NETWORK_FAILED' } });
+      }
+    })();
+    return { abort: () => { stop = true; } };
+  };
 
   document.getElementById('start').addEventListener('click', (e) => {
     e.currentTarget.disabled = true;
