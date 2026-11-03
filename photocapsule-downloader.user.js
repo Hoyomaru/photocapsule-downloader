@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.2.0
-// @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる
+// @version      2.3.0
+// @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
 // @homepageURL  https://github.com/Hoyomaru/photocapsule-downloader
@@ -52,7 +52,10 @@
   };
   const API = 'https://api.photo-capsule-puls.net';
   const DL_LIST_RE = /\/v1\/watchwords\/download\.json/;
+  const SEARCH_RE = /\/v1\/watchwords\/search\.json/;
   const LOGIN_RE = /\/v1\/users\/servicelogin\.json/;
+  const PENDING_KEY = 'pcseq:pendingWatchword'; // トップページへ移ってから入れる合言葉
+  const WATCHWORD_MAX = 40;                      // サイトの入力欄の上限
   const STORE_PREFIX = 'job:';
 
   const W = unsafeWindow;
@@ -63,6 +66,7 @@
   const baseName = (f) => String(f).split('/').pop();
 
   let userCode = '';
+  let searchSentAt = 0;
   let job = null;
   let strayR2 = [];
   let fallbackTimer = null;
@@ -86,6 +90,15 @@
     };
     P.send = function () {
       const url = this.__pcUrl || '';
+      if (SEARCH_RE.test(url)) {
+        searchSentAt = Date.now();
+        this.addEventListener('load', () => {
+          try {
+            const json = this.response && typeof this.response === 'object' ? this.response : JSON.parse(this.responseText);
+            onSearchResponse(json);
+          } catch (e) { console.warn('[pcseq]', e); }
+        });
+      }
       if (DL_LIST_RE.test(url) || LOGIN_RE.test(url)) {
         this.addEventListener('load', () => {
           try {
@@ -154,6 +167,67 @@
   function isCoin(contentsDownload, meta) {
     if (contentsDownload && String(contentsDownload.is_usecoin) === '1') return true;
     return !!(meta && Number(meta.useCoinCount) > 0);
+  }
+
+  // ===== 合言葉の貼り付け =====
+  // サイトの入力欄に入れて「受け取る」を押すだけ。検索やコインの確認はサイトに任せる
+
+  // 掲示板からのコピーに付きがちな前後の空白・改行・かっこを取り除く
+  function cleanWatchword(text) {
+    const line = String(text || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean) || '';
+    return line.replace(/^[「『"'“”]+|[」』"'“”]+$/g, '').trim();
+  }
+
+  function findForm() {
+    const input = document.querySelector('input.inputKey');
+    const btn = document.getElementById('submit-btn');
+    return input && btn ? { input, btn } : null;
+  }
+
+  // React の入力欄なので、値を入れたあと input イベントで知らせる
+  function fillInput(input, value) {
+    const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value');
+    desc.set.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // 戻り値: 'sent' 送った / 'moved' 別のページへ移った / 'failed' 入れられなかった
+  async function submitWatchword(w) {
+    if (!findForm()) {
+      try { sessionStorage.setItem(PENDING_KEY, w); } catch (e) { /* ignore */ }
+      location.assign('/');
+      return 'moved';
+    }
+    const since = Date.now();
+    // 読み込み直後はサイトの準備ができておらず押しても反応しないので、検索が始まるまで繰り返す
+    for (let t = 0; t < 10; t++) {
+      const f = findForm();
+      if (!f) return 'moved'; // ログイン画面などへ移った
+      fillInput(f.input, w);
+      await sleep(80);
+      f.btn.click();
+      for (let k = 0; k < 8; k++) {
+        await sleep(150);
+        if (searchSentAt >= since) return 'sent';
+        if (!findForm()) return 'moved';
+      }
+    }
+    return 'failed';
+  }
+
+  function takePendingWatchword() {
+    try {
+      const w = sessionStorage.getItem(PENDING_KEY);
+      sessionStorage.removeItem(PENDING_KEY);
+      return w || '';
+    } catch (e) { return ''; }
+  }
+
+  function onSearchResponse(json) {
+    if (!ui) return;
+    const data = json && json.data;
+    if (json && json.success && Array.isArray(data) && !data.length) ui.note('ng', 'その合言葉は見つかりませんでした。コピーした文字が合っているか確認してください。');
+    else ui.note(null);
   }
 
   // ===== ファイル名 =====
@@ -569,6 +643,7 @@
       down: 'M11 3h2v10.2l3.6-3.6L18 11l-6 6-6-6 1.4-1.4 3.6 3.6zM5 19h14v2H5z',
       check: 'M9.5 16.2 5.3 12l-1.4 1.4 5.6 5.6L21 7.5l-1.4-1.4z',
       alert: 'M11 7h2v7h-2zm0 9h2v2h-2zM12 2 1 21h22z',
+      paste: 'M9 2h6a1 1 0 0 1 1 1v1h2.5A1.5 1.5 0 0 1 20 5.5v15a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 20.5v-15A1.5 1.5 0 0 1 5.5 4H8V3a1 1 0 0 1 1-1zm1 2v2h4V4zM6 6v14h12V6h-2v2H8V6z',
     };
     function icon(name, size) {
       const s = document.createElementNS(SVG_NS, 'svg');
@@ -666,6 +741,10 @@
       .btn.primary:hover { background: #229fd6; }
       .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 6px 6px; }
       .btn.ghost:hover { color: var(--fg); }
+      .btn.wide { display: flex; justify-content: center; width: 100%; padding: 8px 11px; font-size: 13px; }
+      .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+      .paste { margin-top: 10px; }
+      .paste .msg { margin-top: 8px; }
       .btn .rot { transition: transform .2s; }
       .btn.open .rot { transform: rotate(180deg); }
       .conc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -722,6 +801,8 @@
     let host = null;
     let wrap, card, pill, body, ctlRow, ctlBtns, gridBtn, grid, legend, sel;
     let pending = false;
+    let pasteNote = null; // { cls, text } 貼り付けボタンの下に出す知らせ
+    let pasting = false;
     let pos = GM_getValue('pos', null);
     let minimized = !!GM_getValue('minimized', false);
     let gridOpen = !!GM_getValue('gridOpen', false);
@@ -912,7 +993,7 @@
     }
 
     function renderCard() {
-      body.replaceChildren(...[saveView(), ...(job ? jobView(job) : idleView())].filter(Boolean));
+      body.replaceChildren(...[saveView(), pasteView(), ...(job ? jobView(job) : idleView())].filter(Boolean));
       ctlRow.hidden = !job;
       const showGrid = !!job && gridOpen;
       grid.hidden = !showGrid;
@@ -985,9 +1066,43 @@
         el('div', { className: 'hint' }, 'ダウンロードフォルダそのものは Chrome の制限で選べません。選択画面の「新しいフォルダー」で中にフォルダ（例: 写真カプセル）を作り、それを選んでください。'));
     }
 
+    // ---- 貼り付けて受け取る ----
+    function note(cls, text) {
+      pasteNote = cls ? { cls, text } : null;
+      render();
+    }
+
+    async function onPaste() {
+      if (pasting) return;
+      let text = '';
+      try {
+        text = await navigator.clipboard.readText();
+      } catch (e) {
+        note('ng', 'クリップボードを読めませんでした。アドレスバーの左のアイコンから、このサイトの「クリップボード」を「許可」にしてください。');
+        return;
+      }
+      const w = cleanWatchword(text);
+      if (!w) { note('warn', 'クリップボードが空です。掲示板で合言葉をコピーしてから押してください。'); return; }
+      if (w.length > WATCHWORD_MAX) { note('warn', `コピーした文字が長すぎます（合言葉は${WATCHWORD_MAX}文字まで）。合言葉だけをコピーしてください。`); return; }
+      pasting = true;
+      note('info', `「${w}」で受け取ります…`);
+      const r = await submitWatchword(w);
+      pasting = false;
+      if (r === 'failed') note('ng', `サイトの入力欄に入れられませんでした。「${w}」を手で入れて「受け取る」を押してください。`);
+      else render();
+    }
+
+    function pasteView() {
+      if (job && job.running) return null; // 保存中に押すと今の保存が止まるので出さない
+      return el('div', { className: 'paste' },
+        el('button', { className: 'btn primary wide', type: 'button', 'aria-disabled': String(pasting),
+          title: 'クリップボードの合言葉をサイトに入れて「受け取る」を押します', onclick: onPaste }, icon('paste', 15), '貼り付けて受け取る'),
+        pasteNote ? el('div', { className: 'msg ' + pasteNote.cls }, icon(pasteNote.cls === 'info' ? 'down' : 'alert', 14), el('span', null, pasteNote.text)) : null);
+    }
+
     function idleView() {
       const jobs = listUnfinishedJobs();
-      if (!jobs.length) return [el('div', { className: 'empty' }, '合言葉を受け取ると、ここに進み具合が表示されます。')];
+      if (!jobs.length) return [el('div', { className: 'empty' }, '掲示板で合言葉をコピーして、上のボタンを押すと受け取れます。')];
       return [
         el('div', { className: 'msg warn' }, icon('alert', 14), '途中で止まった受信があります。'),
         ...jobs.slice(0, 5).map((s) => {
@@ -1104,15 +1219,20 @@
       return '約' + Math.floor(sec / 3600) + '時間' + Math.round((sec % 3600) / 60) + '分';
     }
 
-    return { show, hide, render, renderSoon };
+    return { show, hide, render, renderSoon, note };
   })();
 
   GM_registerMenuCommand('進み具合のパネルを表示', () => ui.show());
 
-  // 起動時: 前回のフォルダを読み込み、未設定か途中の受信があればパネルを出す
+  // 起動時: 前回のフォルダを読み込んでからパネルを出す（「貼り付けて受け取る」をいつでも押せるように）
   document.addEventListener('DOMContentLoaded', async () => {
     await dirReady;
-    if (!job && (listUnfinishedJobs().length || (getMode() === 'folder' && !dir.stored))) ui.show();
-    else ui.render();
+    ui.show();
+    const w = takePendingWatchword(); // 別のページで「貼り付けて受け取る」を押した続き
+    if (w) {
+      ui.note('info', `「${w}」で受け取ります…`);
+      const r = await submitWatchword(w);
+      if (r === 'failed') ui.note('ng', `サイトの入力欄に入れられませんでした。「${w}」を手で入れて「受け取る」を押してください。`);
+    }
   }, { once: true });
 })();

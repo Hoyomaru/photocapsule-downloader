@@ -28,16 +28,24 @@
 </style>
 
 <main>
-  <h1>順次ダウンローダー v2.2 の試運転</h1>
+  <h1>順次ダウンローダー v2.3 の試運転</h1>
   <p>右下のパネルは、スクリプト本体そのものです。サイトとの通信と保存だけを偽物に差し替えています。実際にはファイルを保存しません。</p>
 
   <section class="box" aria-labelledby="h-steps">
     <h2 id="h-steps">試し方</h2>
     <ol>
       <li>パネル上部で保存方式を選ぶ。「フォルダに書き込む」なら「保存先を選ぶ」を押す（偽のフォルダ「写真カプセル」が選ばれます）</li>
-      <li>下の「受信を始める」を押す（写真と動画 40 件）</li>
+      <li>下の「受信を始める」を押す（写真と動画 40 件）。または、合言葉をコピーしてパネルの「貼り付けて受け取る」を押す（「なし」と入れると見つからない合言葉になります）</li>
       <li>見出し部分をドラッグして動かす、最小化する、「一覧」を開くなどを試す</li>
     </ol>
+  </section>
+
+  <section class="box" aria-labelledby="h-form">
+    <h2 id="h-form">偽のサイトの入力欄</h2>
+    <div class="row">
+      <input type="text" class="form-control inputKey" maxlength="40" placeholder="秘密の合言葉を入力" style="font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg)">
+      <input type="button" id="submit-btn" value="受け取る" style="font:inherit;font-weight:700;padding:7px 14px;border-radius:8px;border:0;background:var(--accent);color:#fff;cursor:pointer">
+    </div>
   </section>
 
   <section class="box" aria-labelledby="h-ctl">
@@ -138,7 +146,9 @@
     addEventListener(t, f) { if (t === 'load') this.l.push(f); }
     send() {
       setTimeout(() => {
-        this.response = this.url.includes('servicelogin') ? { data: { User: { user_code: 'DEMO' } } } : listJson();
+        this.response = this.url.includes('servicelogin') ? { data: { User: { user_code: 'DEMO' } } }
+          : this.url.includes('search.json') ? searchJson(new URL(this.url).searchParams.get('watchword'))
+          : listJson();
         this.l.forEach((f) => f());
       }, 50);
     }
@@ -172,11 +182,26 @@
     return { abort: () => { stop = true; } };
   };
 
-  document.getElementById('start').addEventListener('click', (e) => {
-    e.currentTarget.disabled = true;
-    sessionStorage.setItem('searchResult', JSON.stringify({ id: 42, name: '夏休み2026', useCoinCount: 0 }));
+  function searchJson(w) {
+    return w === 'なし' ? { success: true, data: [] } : { success: true, data: { Watchword: { id: 42, name: w } } };
+  }
+  function fakeReceive(name) {
+    sessionStorage.setItem('searchResult', JSON.stringify({ id: 42, name, useCoinCount: 0 }));
     const login = new XMLHttpRequest(); login.open('POST', 'https://api.photo-capsule-puls.net/v1/users/servicelogin.json'); login.send();
     const list = new XMLHttpRequest(); list.open('GET', 'https://api.photo-capsule-puls.net/v1/watchwords/download.json?watchword_id=42'); list.send();
+  }
+  document.getElementById('start').addEventListener('click', (e) => {
+    e.currentTarget.disabled = true;
+    fakeReceive('夏休み2026');
+  });
+  // サイトと同じく、合言葉を検索してから受信する
+  document.getElementById('submit-btn').addEventListener('click', () => {
+    const w = document.querySelector('input.inputKey').value;
+    if (!w) return alert('合言葉が入力されていません。');
+    const x = new XMLHttpRequest();
+    x.open('GET', 'https://api.photo-capsule-puls.net/v1/watchwords/search.json?watchword=' + encodeURIComponent(w));
+    x.addEventListener('load', () => { if (!Array.isArray(x.response.data)) fakeReceive(w); });
+    x.send();
   });
   document.getElementById('reload').addEventListener('click', () => location.reload());
 </script>
