@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.3.2
+// @version      2.4.0
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -331,6 +331,18 @@
   }
   function loadJob(id) { return GM_getValue(STORE_PREFIX + id, null); }
   function deleteJob(id) { GM_deleteValue(STORE_PREFIX + id); }
+  // すべて保存し終わった受信の記録は、FINISHED_KEEP_DAYS 日たったら消す(保存領域が増え続けないように)
+  const FINISHED_KEEP_DAYS = 30;
+  function pruneFinishedJobs() {
+    const limit = Date.now() - FINISHED_KEEP_DAYS * 86400000;
+    for (const k of GM_listValues()) {
+      if (!k.startsWith(STORE_PREFIX)) continue;
+      const s = GM_getValue(k, null);
+      if (!s || !s.items || (s.updatedAt < limit && s.items.every((i) => i.status === 'done'))) GM_deleteValue(k);
+    }
+  }
+  try { pruneFinishedJobs(); } catch (e) { console.warn('[pcseq]', e); }
+
   function listUnfinishedJobs() {
     return GM_listValues()
       .filter((k) => k.startsWith(STORE_PREFIX))
@@ -1193,18 +1205,28 @@
       if (it && it.status === 'error') retry(job, [it]);
     }
 
+    // タイルは作り直さず、変わった所だけ書き換える(ファイルが多いと毎回の作り直しが重いため)
     function renderGrid(j) {
       const stateText = { done: '保存済み', run: '保存中', wait: '待機中', error: '失敗' };
-      grid.replaceChildren(...j.items.map((it, idx) => {
+      if (grid.childElementCount !== j.items.length || grid.dataset.job !== j.id) {
+        grid.dataset.job = j.id;
+        grid.replaceChildren(...j.items.map((it, idx) =>
+          el('div', { className: 'tile', 'data-i': String(idx) }, el('span', null, String(idx + 1)))));
+      }
+      const tiles = grid.children;
+      j.items.forEach((it, idx) => {
         let cls = 'tile';
-        let style = null;
+        let p = '';
         if (it.status === 'done') cls += ' done';
-        else if (it.status === 'run') { cls += ' run'; style = `--p:${it.size ? Math.floor(((it.loaded || 0) / it.size) * 100) : 0}`; }
+        else if (it.status === 'run') { cls += ' run'; p = String(it.size ? Math.floor(((it.loaded || 0) / it.size) * 100) : 0); }
         else if (it.status === 'error') cls += ' err';
         else if (it.err) cls += ' retry';
         const tip = `${it.file}\n${stateText[it.status] || ''}${it.err ? '（' + it.err + '）' : ''}${it.status === 'error' ? '\nクリックで再試行' : ''}`;
-        return el('div', { className: cls, style, title: tip, 'data-i': String(idx) }, el('span', null, String(idx + 1)));
-      }));
+        const t = tiles[idx];
+        if (t.className !== cls) t.className = cls;
+        if (t.style.getPropertyValue('--p') !== p) { if (p) t.style.setProperty('--p', p); else t.style.removeProperty('--p'); }
+        if (t.title !== tip) t.title = tip;
+      });
     }
 
     function fmtBytes(n) {
