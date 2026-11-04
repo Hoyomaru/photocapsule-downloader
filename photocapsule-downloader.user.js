@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.3.1
+// @version      2.3.2
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -1223,6 +1223,14 @@
   })();
 
   GM_registerMenuCommand('進み具合のパネルを表示', () => ui.show());
+
+  // 保存中にタブを閉じたり別のページへ移ろうとしたら、ブラウザの確認を出す
+  // （続きからの再開はできるが、保存中のファイルは最初から取り直しになる）
+  window.addEventListener('beforeunload', (e) => {
+    if (!job || !(job.running || job.items.some((i) => i.status === 'run'))) return;
+    e.preventDefault();
+    e.returnValue = ''; // 古いブラウザ向け
+  });
 
   // 起動時: 前回のフォルダを読み込んでからパネルを出す（「貼り付けて受け取る」をいつでも押せるように）
   document.addEventListener('DOMContentLoaded', async () => {
