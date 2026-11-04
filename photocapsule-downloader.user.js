@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.3.0
+// @version      2.3.1
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -741,7 +741,7 @@
       .btn.primary:hover { background: #229fd6; }
       .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 6px 6px; }
       .btn.ghost:hover { color: var(--fg); }
-      .btn.wide { display: flex; justify-content: center; width: 100%; padding: 8px 11px; font-size: 13px; }
+      .btn.wide { display: flex; justify-content: center; box-sizing: border-box; width: 100%; padding: 8px 11px; font-size: 13px; }
       .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
       .paste { margin-top: 10px; }
       .paste .msg { margin-top: 8px; }
