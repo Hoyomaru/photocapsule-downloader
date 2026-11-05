@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.4.4
+// @version      2.5.0
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -710,7 +710,13 @@
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
       .card { width: 330px; max-width: calc(100vw - 24px); background: var(--bg); border: 1px solid var(--line);
-              border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+              border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+              display: flex; flex-direction: column; max-height: min(var(--h, 480px), calc(100vh - 8px)); }
+      .card > * { flex: none; }
+      .card > .sec { flex: 0 1 auto; min-height: 0; overflow: auto; } /* 一覧が先に縮み、それでも入らない時だけここがスクロール */
+      .grip { height: 10px; display: grid; place-items: center; cursor: ns-resize; touch-action: none; border-top: 1px solid var(--line); }
+      .grip::before { content: ""; width: 36px; height: 3px; border-radius: 999px; background: var(--line); }
+      .grip:hover::before, .grip.dragging::before { background: var(--accent); }
       .head { display: flex; align-items: center; gap: 6px; padding: 9px 8px 9px 14px; color: #fff;
               background: linear-gradient(135deg, #4cc6f0, #229fd6); cursor: grab; user-select: none; touch-action: none; }
       .head.dragging, .pill.dragging { cursor: grabbing; }
@@ -778,8 +784,9 @@
       .conc { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
       select { color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; cursor: pointer; }
 
+      .card > .grid { flex: 1 1000 auto; min-height: 76px; }
       .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(32px, 1fr)); gap: 4px;
-              max-height: 236px; overflow: auto; padding: 10px 14px 14px; border-top: 1px solid var(--line); }
+              overflow: auto; padding: 10px 14px 14px; border-top: 1px solid var(--line); }
       .tile { position: relative; aspect-ratio: 1; display: grid; place-items: center; border-radius: 7px;
               font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; background: var(--bg2); color: var(--muted); }
       .tile > span { position: relative; z-index: 1; }
@@ -834,6 +841,7 @@
     let pos = GM_getValue('pos', null);
     let minimized = !!GM_getValue('minimized', false);
     let gridOpen = !!GM_getValue('gridOpen', false);
+    let cardH = Number(GM_getValue('cardH', 0)) || 0; // 0 は既定の高さ
 
     function ensure() {
       if (host && host.isConnected) return;
@@ -863,8 +871,10 @@
         el('span', null, el('i', { style: 'background:var(--warn-soft)' }), '再試行待ち'),
         el('span', null, el('i', { style: 'background:var(--ng)' }), '失敗（押すと再試行）'));
 
+      const grip = el('div', { className: 'grip', title: 'ドラッグで高さを変更（ダブルクリックで元に戻す）' });
       card = el('div', { className: 'card', role: 'region', 'aria-label': '順次ダウンローダー' },
-        head, el('div', { className: 'sec' }, body, ctlRow), grid, legend);
+        head, el('div', { className: 'sec' }, body, ctlRow), grid, legend, grip);
+      applyCardH();
       pill = el('div', { className: 'pill', role: 'button', tabindex: '0', title: 'クリックで開く',
         onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setMinimized(false); } } });
       wrap = el('div', { className: 'wrap' }, card, pill);
@@ -872,6 +882,7 @@
 
       draggable(head, null);
       draggable(pill, () => setMinimized(false));
+      resizable(grip);
       window.addEventListener('resize', () => applyPos());
       document.documentElement.append(host);
       applyPos();
@@ -916,6 +927,50 @@
         handle.addEventListener('pointermove', move);
         handle.addEventListener('pointerup', up);
         handle.addEventListener('pointercancel', up);
+      });
+    }
+
+    // ---- 高さの変更 ----
+    // 下端のつまみで高さの上限を変える。上端は動かさず、下に伸び縮みさせる
+    const MIN_H = 160;
+    function applyCardH() {
+      if (cardH) card.style.setProperty('--h', cardH + 'px'); else card.style.removeProperty('--h');
+    }
+    function resizable(grip) {
+      grip.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const top = card.getBoundingClientRect().top;
+        const startH = card.offsetHeight;
+        const sy = e.clientY;
+        grip.setPointerCapture(e.pointerId);
+        grip.classList.add('dragging');
+        const move = (ev) => {
+          cardH = Math.round(clamp(startH + ev.clientY - sy, MIN_H, Math.max(MIN_H, innerHeight - 4 - top)));
+          applyCardH();
+          pos = { right: pos ? pos.right : 16, bottom: innerHeight - top - card.offsetHeight };
+          pos = applyPos();
+        };
+        const up = () => {
+          grip.removeEventListener('pointermove', move);
+          grip.removeEventListener('pointerup', up);
+          grip.removeEventListener('pointercancel', up);
+          grip.classList.remove('dragging');
+          GM_setValue('cardH', cardH);
+          GM_setValue('pos', pos);
+        };
+        grip.addEventListener('pointermove', move);
+        grip.addEventListener('pointerup', up);
+        grip.addEventListener('pointercancel', up);
+      });
+      grip.addEventListener('dblclick', () => {
+        const top = card.getBoundingClientRect().top;
+        cardH = 0;
+        applyCardH();
+        GM_setValue('cardH', 0);
+        pos = { right: pos ? pos.right : 16, bottom: innerHeight - top - card.offsetHeight };
+        pos = applyPos();
+        GM_setValue('pos', pos);
       });
     }
 
