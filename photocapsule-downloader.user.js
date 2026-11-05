@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.4.3
+// @version      2.4.4
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -11,6 +11,7 @@
 // @updateURL    https://raw.githubusercontent.com/Hoyomaru/photocapsule-downloader/main/photocapsule-downloader.user.js
 // @match        https://webapp.photo-capsule-puls.net/*
 // @run-at       document-start
+// @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
@@ -38,6 +39,9 @@
 
 (function () {
   'use strict';
+
+  // サイトは同じドメインの広告ページを iframe で埋め込んでいる。そこでは動かない（パネルが二重に出るため）
+  if (window.top !== window.self) return;
 
   // ===== 設定 =====
   const CFG = {
