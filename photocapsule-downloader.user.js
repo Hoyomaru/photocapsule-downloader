@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.4.0
+// @version      2.4.1
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -524,7 +524,9 @@
         it.err = r.err;
         j.fatal = r.fatal;
         j.stopped = true;
-        if (r.lostDir) dir.granted = null;
+        // 許可が本当に切れたかをブラウザに聞き直す。ファイルのロックなど許可と関係ない失敗で
+        // 「許可する」を出すと、押しても確認画面が出ない(もう許可済みなので)
+        if (r.lostDir) dir.check().then(() => ui.render());
       } else if (it.tries <= CFG.retries) {
         it.status = 'wait';
         it.err = r.err;
@@ -631,8 +633,8 @@
   // 再試行しても直らないエラー(保存先の問題)
   function fatalOf(e) {
     const n = e && e.name;
-    if (n === 'NotAllowedError' || n === 'SecurityError') return '保存先フォルダへの書き込み許可が切れました。「書き込みを許可」を押してから再開してください。';
-    if (n === 'NotFoundError') return '保存先フォルダが見つかりません（移動や削除をしましたか？）。「保存先を変更」で選び直してください。';
+    if (n === 'NotAllowedError' || n === 'SecurityError') return '保存先フォルダへの書き込み許可が切れました。「許可する」を押してください。';
+    if (n === 'NotFoundError') return '保存先フォルダが見つかりません（移動や削除をしましたか？）。保存先の「変更」で選び直してください。';
     if (n === 'QuotaExceededError') return 'ディスクの空きが足りません。空きを作ってから再開してください。';
     if (n === 'NoModificationAllowedError' || n === 'InvalidModificationError') return '保存先のファイルに書き込めません（他のアプリで開いていませんか？）。';
     return '';
