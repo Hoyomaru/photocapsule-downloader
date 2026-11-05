@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.4.1
+// @version      2.4.2
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -1257,7 +1257,13 @@
   });
 
   // 起動時: 前回のフォルダを読み込んでからパネルを出す（「貼り付けて受け取る」をいつでも押せるように）
-  document.addEventListener('DOMContentLoaded', async () => {
+  // Tampermonkey はブラウザ起動直後などに、ページの読み込みが終わってからスクリプトを動かすことがある。
+  // そのときは DOMContentLoaded がもう来ないので、すぐに始める
+  const onReady = (fn) => {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn, { once: true });
+    else fn();
+  };
+  onReady(async () => {
     await dirReady;
     ui.show();
     const w = takePendingWatchword(); // 別のページで「貼り付けて受け取る」を押した続き
@@ -1266,5 +1272,5 @@
       const r = await submitWatchword(w);
       if (r === 'failed') ui.note('ng', `サイトの入力欄に入れられませんでした。「${w}」を手で入れて「受け取る」を押してください。`);
     }
-  }, { once: true });
+  });
 })();
