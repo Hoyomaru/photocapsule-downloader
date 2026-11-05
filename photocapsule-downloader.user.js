@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         写真カプセル＋ 順次ダウンローダー
 // @namespace    local.photocapsule.sequential
-// @version      2.4.2
+// @version      2.4.3
 // @description  合言葉の受信時、サイト標準の一斉保存をやめ、選んだフォルダ（またはダウンロードフォルダ）へ少数ずつ順番に保存する。URLの期限切れは自動で取り直し、中断しても続きから再開できる。コピーした合言葉をボタン1つで受け取れる
 // @author       Hoyomaru
 // @license      MIT
@@ -49,6 +49,7 @@
     maxRefresh: 50,                  // 1回のジョブで取り直す上限
     fallbackSettleMs: 2000,
     downloadRoot: '写真カプセル',    // ダウンロード方式の保存先(ダウンロードフォルダの中)
+    permissionTimeoutMs: 3000,       // フォルダの許可の問い合わせを待つ上限
   };
   const API = 'https://api.photo-capsule-puls.net';
   const DL_LIST_RE = /\/v1\/watchwords\/download\.json/;
@@ -290,11 +291,19 @@
       try { this.stored = await dirStore.get(); } catch (e) { this.stored = null; }
       await this.check();
     },
+    lost: false,    // 前回のフォルダの記録が壊れていて使えない
     async check() {
       this.granted = null;
       if (!this.stored) return false;
       try {
-        if ((await this.stored.queryPermission({ mode: 'readwrite' })) === 'granted') this.granted = this.stored;
+        // Chrome では、保存しておいたフォルダの参照に queryPermission がいつまでも返らないことがある。
+        // 待ち続けるとパネルも保存も止まるので、返らなければ壊れた参照として選び直してもらう
+        const st = await Promise.race([
+          this.stored.queryPermission({ mode: 'readwrite' }),
+          new Promise((r) => setTimeout(() => r('timeout'), CFG.permissionTimeoutMs)),
+        ]);
+        if (st === 'granted') this.granted = this.stored;
+        else if (st === 'timeout') { this.stored = null; this.lost = true; }
       } catch (e) { /* ignore */ }
       return !!this.granted;
     },
@@ -308,6 +317,7 @@
       }
       this.stored = h;
       this.granted = h;
+      this.lost = false;
       return h;
     },
   };
@@ -1077,7 +1087,8 @@
       return el('div', null,
         el('div', { className: 'dir need' }, icon('folder', 16), el('span', { className: 'n' }, '保存先が未設定'),
           button('保存先を選ぶ', () => onDirButton(true), 'primary')),
-        el('div', { className: 'hint' }, 'ダウンロードフォルダそのものは Chrome の制限で選べません。選択画面の「新しいフォルダー」で中にフォルダ（例: 写真カプセル）を作り、それを選んでください。'));
+        dir.lost ? el('div', { className: 'hint' }, '前回のフォルダを Chrome で確認できなかったので、選び直してください（同じフォルダでかまいません）。') : null,
+        el('div', { className: 'hint' },'ダウンロードフォルダそのものは Chrome の制限で選べません。選択画面の「新しいフォルダー」で中にフォルダ（例: 写真カプセル）を作り、それを選んでください。'));
     }
 
     // ---- 貼り付けて受け取る ----
